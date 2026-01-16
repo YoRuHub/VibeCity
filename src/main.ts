@@ -3,6 +3,9 @@ import { Scene } from './core/Scene';
 import { HexGrid } from './hex/HexGrid';
 import { AudioEngine } from './audio/AudioEngine';
 import { RippleSystem } from './effects/RippleSystem';
+import { TimeManager } from './time/TimeManager';
+import { TimeController } from './ui/TimeController';
+// @ts-ignore
 import * as THREE from 'three';
 
 /**
@@ -13,8 +16,10 @@ class App {
     private hexGrid: HexGrid;
     private audioEngine: AudioEngine;
     private rippleSystem: RippleSystem;
-    private raycaster: THREE.Raycaster;
-    private mouse: THREE.Vector2;
+    private timeManager: TimeManager;
+    private timeController: TimeController;
+    private raycaster: any; // THREE.Raycaster
+    private mouse: any; // THREE.Vector2
 
     constructor() {
         const app = document.querySelector<HTMLDivElement>('#app');
@@ -26,6 +31,10 @@ class App {
         this.audioEngine = new AudioEngine();
         this.rippleSystem = new RippleSystem();
 
+        // 時間管理システムの初期化
+        this.timeManager = new TimeManager(22); // 初期設定は夜(22時)
+        this.timeController = new TimeController(this.timeManager);
+
         this.raycaster = new THREE.Raycaster();
         this.mouse = new THREE.Vector2();
 
@@ -34,6 +43,11 @@ class App {
 
         // イベントリスナーの登録
         this.setupEventListeners();
+
+        // 時間変更イベントの初期バインド
+        this.timeManager.on('timeChanged', (time: number) => {
+            this.scene.setTime(time);
+        });
 
         // アニメーションループの開始
         this.scene.startAnimation(this.update.bind(this));
@@ -65,7 +79,7 @@ class App {
         );
 
         if (intersects.length > 0) {
-            const hex = intersects[0]?.object as THREE.Mesh;
+            const hex = intersects[0]?.object as any; // THREE.Mesh
             if (!hex) return;
 
             const { q, r } = hex.userData as { q: number; r: number };
@@ -98,6 +112,9 @@ class App {
      * フレームごとの更新処理
      */
     private update(deltaTime: number): void {
+        // 時間進行の更新
+        this.timeManager.update(deltaTime);
+
         // 波紋システムの更新
         this.rippleSystem.update(deltaTime);
 

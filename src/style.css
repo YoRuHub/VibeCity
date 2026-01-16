@@ -1,5 +1,7 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;700&display=swap');
+
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: 'Outfit', Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
@@ -11,6 +13,14 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
+  --glass-bg: rgba(255, 255, 255, 0.1);
+  --glass-border: rgba(255, 255, 255, 0.15);
+  --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  --accent-color: #646cff;
+  --text-primary: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.6);
+  --thumb-color: #fff;
 }
 
 * {
@@ -25,6 +35,7 @@ body {
   min-width: 320px;
   min-height: 100vh;
   overflow: hidden;
+  background: #000;
 }
 
 #app {
@@ -36,4 +47,269 @@ body {
 canvas {
   display: block;
   outline: none;
+}
+
+/* TimeController UI Container */
+.time-controller {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  z-index: 1000;
+  pointer-events: none;
+  /* コンテナ自体はイベント透過 */
+}
+
+/* Glassmorphism Panel (全体の一体感) */
+.glass-panel {
+  pointer-events: auto;
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  border-radius: 24px;
+  padding: 24px 20px;
+  /* 上下のパディングを少し増やして余裕を持たせる */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  /* 要素間の隙間を広げる */
+  transition: transform 0.3s ease;
+  min-width: 180px;
+  /* 横幅を確保 */
+}
+
+.glass-panel:hover {
+  transform: translateY(-2px);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* Clock Container (SVG & Center Info) */
+.clock-container {
+  position: relative;
+  width: 180px;
+  height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+/* SVG Circular Slider */
+.time-progress-svg {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+
+.time-progress-svg:active {
+  cursor: grabbing;
+}
+
+.progress-bg {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.15);
+  stroke-width: 6;
+}
+
+.progress-bar {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.9);
+  stroke-width: 6;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.2s ease;
+  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.4));
+}
+
+.progress-thumb {
+  fill: rgba(255, 255, 255, 0.95);
+  stroke: rgba(255, 255, 255, 0.2);
+  stroke-width: 2;
+  cursor: grab;
+  filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.6));
+}
+
+.progress-thumb:active {
+  cursor: grabbing;
+}
+
+/* Center Info (Time & Play Button) */
+.center-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.time-display {
+  font-family: 'Outfit', monospace;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  user-select: none;
+}
+
+/* Play/Pause Button - Center */
+.play-pause-btn {
+  pointer-events: auto;
+  /* ここだけクリック可能に */
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  color: var(--text-secondary);
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.play-pause-btn:hover {
+  color: var(--text-primary);
+  transform: scale(1.1);
+}
+
+/* Play Icon */
+.play-pause-btn::before {
+  content: '';
+  display: block;
+  width: 0;
+  height: 0;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  border-left: 10px solid currentColor;
+  transform: translateX(2px);
+}
+
+/* Pause Icon */
+.play-pause-btn.playing::before {
+  width: 10px;
+  height: 10px;
+  border: none;
+  border-left: 3px solid currentColor;
+  border-right: 3px solid currentColor;
+  background: transparent;
+  transform: translateX(0);
+}
+
+/* Jump Controls */
+.jump-controls {
+  display: flex;
+  gap: 12px;
+  /* ボタンが増えたのでギャップを少し詰める */
+  padding-top: 4px;
+  padding-bottom: 4px;
+  /* 下部の見切れ防止 */
+}
+
+.jump-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+  color: var(--text-secondary);
+}
+
+.jump-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: translateY(-2px);
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.icon {
+  width: 16px;
+  height: 16px;
+  background: currentColor;
+  border-radius: 50%;
+  position: relative;
+}
+
+/* Morning Icon (Horizon Sun) */
+.icon-morning {
+  background: transparent;
+  border-bottom: 2px solid currentColor;
+  border-radius: 0;
+  width: 18px;
+  height: 9px;
+  margin-top: 2px;
+}
+
+.icon-morning::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 8px;
+  height: 8px;
+  background: currentColor;
+  border-radius: 50%;
+}
+
+/* Day Icon (Full Sun) */
+.icon-day {
+  box-shadow: 0 0 10px currentColor;
+}
+
+/* Night Icon (Crescent Moon) */
+.icon-night {
+  background: transparent;
+  box-shadow: -4px 2px 0 0 currentColor;
+  transform: translateX(4px) rotate(-20deg);
+}
+
+/* Now Icon (Clock / Refresh) */
+.icon-now {
+  background: transparent;
+  border: 2px solid currentColor;
+  box-sizing: border-box;
+}
+
+.icon-now::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 5px;
+  background: currentColor;
+  transform: translate(-50%, -50%) translateY(-2px);
+}
+
+.icon-now::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 2px;
+  background: currentColor;
+  transform: translate(-50%, -50%) translateX(1px);
+}
+
+/* Responsive for smaller screens */
+@media (max-width: 480px) {
+  .time-controller {
+    top: auto;
+    bottom: 32px;
+    /* 下部マージンを増やして見切れ防止 */
+    right: 50%;
+    transform: translateX(50%);
+  }
 }
