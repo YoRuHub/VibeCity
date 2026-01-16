@@ -2,6 +2,7 @@ import './style.css';
 import { Scene } from './core/Scene';
 import { HexGrid } from './hex/HexGrid';
 import { AudioEngine } from './audio/AudioEngine';
+import { RippleSystem } from './effects/RippleSystem';
 import * as THREE from 'three';
 
 /**
@@ -11,6 +12,7 @@ class App {
     private scene: Scene;
     private hexGrid: HexGrid;
     private audioEngine: AudioEngine;
+    private rippleSystem: RippleSystem;
     private raycaster: THREE.Raycaster;
     private mouse: THREE.Vector2;
 
@@ -20,8 +22,9 @@ class App {
 
         // 各モジュールの初期化
         this.scene = new Scene(app);
-        this.hexGrid = new HexGrid(8);
+        this.hexGrid = new HexGrid(30);
         this.audioEngine = new AudioEngine();
+        this.rippleSystem = new RippleSystem();
 
         this.raycaster = new THREE.Raycaster();
         this.mouse = new THREE.Vector2();
@@ -51,9 +54,7 @@ class App {
      */
     private async handleClick(event: MouseEvent): Promise<void> {
         // 初回クリックでオーディオエンジンを初期化
-        if (!this.audioEngine) {
-            await this.audioEngine.initialize();
-        }
+        await this.audioEngine.initialize();
 
         // レイキャストで六角形の検出
         this.updateMousePosition(event);
@@ -73,8 +74,8 @@ class App {
             const frequency = this.audioEngine.coordsToFrequency(q, r);
             this.audioEngine.playNote(frequency);
 
-            // ビジュアルエフェクト
-            this.animateHex(hex);
+            // 波紋エフェクトを生成（より洗練されたパラメータ）
+            this.rippleSystem.createRipple(q, r, 8, 10.0);
         }
     }
 
@@ -94,32 +95,21 @@ class App {
     }
 
     /**
-     * 六角形のアニメーション
-     */
-    private animateHex(hex: THREE.Mesh): void {
-        // 簡易的なスケールアニメーション
-        const originalScale = hex.scale.clone();
-        hex.scale.set(1.2, 1.2, 1.2);
-
-        setTimeout(() => {
-            hex.scale.copy(originalScale);
-        }, 150);
-
-        // 色の変更
-        const material = hex.material as THREE.MeshStandardMaterial;
-        const originalColor = material.color.clone();
-        material.color.setHex(0xffffff);
-
-        setTimeout(() => {
-            material.color.copy(originalColor);
-        }, 150);
-    }
-
-    /**
      * フレームごとの更新処理
      */
-    private update(_deltaTime: number): void {
-        // 将来的にアニメーションやシミュレーションを追加
+    private update(deltaTime: number): void {
+        // 波紋システムの更新
+        this.rippleSystem.update(deltaTime);
+
+        // 各六角形の明るさを更新
+        const hexStates = this.hexGrid.getAllHexStates();
+        for (const hexState of hexStates) {
+            const intensity = this.rippleSystem.getIntensityAt(hexState.q, hexState.r);
+            this.hexGrid.updateHexIntensity(hexState.q, hexState.r, intensity);
+        }
+
+        // HexGridのスムーズな遷移を更新
+        this.hexGrid.update(deltaTime);
     }
 }
 

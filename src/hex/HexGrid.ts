@@ -10,74 +10,74 @@ export class HexUtils {
     static readonly HEX_SIZE = 1;
 
     /**
-     * 六角形の幅（水平方向の距離）
-     */
-    static readonly HEX_WIDTH = this.HEX_SIZE * Math.sqrt(3);
-
-    /**
-     * 六角形の高さ（垂直方向の距離）
-     */
-    static readonly HEX_HEIGHT = this.HEX_SIZE * 2;
-
-    /**
-     * Axial座標からWorld座標への変換
+     * Axial座標からWorld座標への変換（フラットトップ）
      */
     static axialToWorld(q: number, r: number): { x: number; z: number } {
-        const x = this.HEX_WIDTH * (q + r / 2);
-        const z = this.HEX_HEIGHT * 0.75 * r;
+        // フラットトップの変換式（修正版）
+        const x = this.HEX_SIZE * Math.sqrt(3) * (q + r / 2);
+        const z = this.HEX_SIZE * 3 / 2 * r;
         return { x, z };
     }
 
     /**
-     * 六角形のメッシュを作成
+     * 六角形の6つの頂点を取得（フラットトップ）
      */
-    static createHexMesh(color: THREE.Color = new THREE.Color(0x444444)): THREE.Mesh {
-        const shape = new THREE.Shape();
+    static getHexVertices(centerX: number, centerZ: number): THREE.Vector3[] {
+        const vertices: THREE.Vector3[] = [];
 
-        // 六角形の頂点を描画（フラットトップ）
         for (let i = 0; i < 6; i++) {
-            const angle = (Math.PI / 3) * i;
-            const x = this.HEX_SIZE * Math.cos(angle);
-            const y = this.HEX_SIZE * Math.sin(angle);
-
-            if (i === 0) {
-                shape.moveTo(x, y);
-            } else {
-                shape.lineTo(x, y);
-            }
+            const angle = (Math.PI / 3) * i - Math.PI / 6; // -30度オフセット
+            const x = centerX + this.HEX_SIZE * Math.cos(angle);
+            const z = centerZ + this.HEX_SIZE * Math.sin(angle);
+            vertices.push(new THREE.Vector3(x, 0, z));
         }
-        shape.closePath();
 
-        const geometry = new THREE.ShapeGeometry(shape);
-        const material = new THREE.MeshStandardMaterial({
-            color,
-            roughness: 0.7,
-            metalness: 0.3,
-        });
-
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.rotation.x = -Math.PI / 2; // 水平に配置
-        mesh.receiveShadow = true;
-        mesh.castShadow = true;
-
-        return mesh;
+        return vertices;
     }
+
+    /**
+     * Axial座標間の距離を計算
+     */
+    static axialDistance(q1: number, r1: number, q2: number, r2: number): number {
+        return (Math.abs(q1 - q2) + Math.abs(r1 - r2) + Math.abs(q1 + r1 - q2 - r2)) / 2;
+    }
+}
+
+/**
+ * 六角形の状態を表すインターフェース
+ */
+interface HexState {
+    q: number;
+    r: number;
+    mesh: THREE.LineLoop;
+    material: THREE.LineBasicMaterial;
+    intensity: number;        // 現在の明るさ (0-1)
+    targetIntensity: number;  // 目標明るさ (0-1)
 }
 
 /**
  * ヘキサゴングリッド管理クラス
  */
 export class HexGrid {
-    private hexes: Map<string, THREE.Mesh> = new Map();
     private group: THREE.Group;
+    private hexes: Map<string, HexState> = new Map();
+    private baseColor = new THREE.Color(0x00ffff);
+    private dimmedColor = new THREE.Color(0x008888);
 
-    constructor(radius: number = 10) {
+    constructor(radius: number = 30) {
         this.group = new THREE.Group();
         this.generateGrid(radius);
     }
 
     /**
-     * グリッドの生成
+     * 座標をキーに変換
+     */
+    private coordToKey(q: number, r: number): string {
+        return `${q},${r}`;
+    }
+
+    /**
+     * グリッド全体を個別LineLoopで生成
      */
     private generateGrid(radius: number): void {
         for (let q = -radius; q <= radius; q++) {
@@ -88,25 +88,87 @@ export class HexGrid {
                 this.createHex(q, r);
             }
         }
+
+        console.log(`Generated ${this.hexes.size} hexagons`);
     }
 
     /**
-     * 単一の六角形を作成
+     * 個別の六角形を生成
      */
     private createHex(q: number, r: number): void {
-        const key = `${q},${r}`;
         const { x, z } = HexUtils.axialToWorld(q, r);
+        const vertices = HexUtils.getHexVertices(x, z);
 
-        // ランダムな色のバリエーション
-        const hue = Math.random() * 360;
-        const color = new THREE.Color().setHSL(hue / 360, 0.5, 0.3);
+        // BufferGeometryを作成
+        const geometry = new THREE.BufferGeometry().setFromPoints(vertices);
 
-        const hex = HexUtils.createHexMesh(color);
-        hex.position.set(x, 0, z);
-        hex.userData = { q, r };
+        // 個別のマテリアル
+        const material = new THREE.LineBasicMaterial({
+            color: this.dimmedColor.clone(),
+            linewidth: 1,
+        });
 
-        this.hexes.set(key, hex);
-        this.group.add(hex);
+        // LineLoopで六角形を作成
+        const mesh = new THREE.LineLoop(geometry, material);
+        mesh.userData = { q, r };
+
+        // 状態を保存
+        const key = this.coordToKey(q, r);
+        this.hexes.set(key, {
+            q,
+            r,
+            mesh,
+            material,
+            intensity: 0,
+            targetIntensity: 0,
+        });
+
+        this.group.add(mesh);
+    }
+
+    /**
+     * 六角形の明るさを更新
+     */
+    public updateHexIntensity(q: number, r: number, intensity: number): void {
+        const key = this.coordToKey(q, r);
+        const hex = this.hexes.get(key);
+        if (!hex) return;
+
+        hex.targetIntensity = Math.max(0, Math.min(1, intensity));
+    }
+
+    /**
+     * フレームごとの更新処理（スムーズな遷移）
+     */
+    public update(deltaTime: number): void {
+        const lerpSpeed = 10.0; // 遷移速度
+
+        this.hexes.forEach((hex) => {
+            // 強度が実質0の場合はスキップ（パフォーマンス最適化）
+            if (hex.intensity < 0.001 && hex.targetIntensity < 0.001) {
+                hex.material.color.copy(this.dimmedColor);
+                return;
+            }
+
+            // 現在の明るさを目標に近づける
+            hex.intensity += (hex.targetIntensity - hex.intensity) * lerpSpeed * deltaTime;
+
+            // 色を更新（強度を1.5倍に調整）
+            const boostedIntensity = Math.min(1.0, hex.intensity * 1.5);
+            hex.material.color.lerpColors(
+                this.dimmedColor,
+                this.baseColor,
+                boostedIntensity
+            );
+        });
+    }
+
+    /**
+     * 指定座標の六角形を取得
+     */
+    public getHexAt(q: number, r: number): HexState | undefined {
+        const key = this.coordToKey(q, r);
+        return this.hexes.get(key);
     }
 
     /**
@@ -117,16 +179,16 @@ export class HexGrid {
     }
 
     /**
-     * 指定座標の六角形を取得
+     * すべての六角形を取得
      */
-    public getHex(q: number, r: number): THREE.Mesh | undefined {
-        return this.hexes.get(`${q},${r}`);
+    public getAllHexes(): THREE.Object3D[] {
+        return Array.from(this.hexes.values()).map(hex => hex.mesh);
     }
 
     /**
-     * すべての六角形を取得
+     * すべての六角形の状態を取得
      */
-    public getAllHexes(): THREE.Mesh[] {
+    public getAllHexStates(): HexState[] {
         return Array.from(this.hexes.values());
     }
 }
