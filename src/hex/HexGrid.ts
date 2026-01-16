@@ -22,13 +22,13 @@ export class HexUtils {
     /**
      * 六角形の6つの頂点を取得（フラットトップ）
      */
-    static getHexVertices(centerX: number, centerZ: number): THREE.Vector3[] {
+    static getHexVertices(centerX: number, centerZ: number, scale: number = 1.0): THREE.Vector3[] {
         const vertices: THREE.Vector3[] = [];
 
         for (let i = 0; i < 6; i++) {
             const angle = (Math.PI / 3) * i - Math.PI / 6; // -30度オフセット
-            const x = centerX + this.HEX_SIZE * Math.cos(angle);
-            const z = centerZ + this.HEX_SIZE * Math.sin(angle);
+            const x = centerX + this.HEX_SIZE * scale * Math.cos(angle);
+            const z = centerZ + this.HEX_SIZE * scale * Math.sin(angle);
             vertices.push(new THREE.Vector3(x, 0, z));
         }
 
@@ -49,7 +49,7 @@ export class HexUtils {
 interface HexState {
     q: number;
     r: number;
-    mesh: THREE.LineLoop;
+    mesh: THREE.Group;        // グループに変更（外側と内側の線）
     material: THREE.LineBasicMaterial;
     intensity: number;        // 現在の明るさ (0-1)
     targetIntensity: number;  // 目標明るさ (0-1)
@@ -95,35 +95,42 @@ export class HexGrid {
     /**
      * 個別の六角形を生成
      */
+    /**
+     * 個別の六角形を生成
+     */
     private createHex(q: number, r: number): void {
         const { x, z } = HexUtils.axialToWorld(q, r);
-        const vertices = HexUtils.getHexVertices(x, z);
 
-        // BufferGeometryを作成
-        const geometry = new THREE.BufferGeometry().setFromPoints(vertices);
-
-        // 個別のマテリアル
+        // 個別のマテリアル（共有）
         const material = new THREE.LineBasicMaterial({
             color: this.dimmedColor.clone(),
             linewidth: 1,
         });
 
-        // LineLoopで六角形を作成
-        const mesh = new THREE.LineLoop(geometry, material);
-        mesh.userData = { q, r };
+        // グループ作成
+        const group = new THREE.Group();
+        group.userData = { q, r };
+
+        // 1. 六角形 (Scale 0.95) - 少し隙間を作る
+        const outerVertices = HexUtils.getHexVertices(x, z, 0.95);
+        const outerGeometry = new THREE.BufferGeometry().setFromPoints(outerVertices);
+        const outerMesh = new THREE.LineLoop(outerGeometry, material);
+        group.add(outerMesh);
+
+        // 内側の六角形は不要のため削除
 
         // 状態を保存
         const key = this.coordToKey(q, r);
         this.hexes.set(key, {
             q,
             r,
-            mesh,
+            mesh: group,
             material,
             intensity: 0,
             targetIntensity: 0,
         });
 
-        this.group.add(mesh);
+        this.group.add(group);
     }
 
     /**
