@@ -29,6 +29,55 @@ export class TimeController {
         this.setupDragEvents();
     }
 
+    private adjustInterval: number | null = null;
+    private adjustSpeed: number = 0;
+    private adjustStartTime: number = 0;
+
+    private setupAdjustButton(btn: HTMLElement, direction: number): void {
+        const start = (e: Event) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (this.adjustInterval !== null) return;
+
+            this.adjustSpeed = 0.01; // 初期速度 (もっとゆっくり)
+            this.adjustStartTime = performance.now();
+
+            const loop = () => {
+                // 長押し時間に応じて加速
+                const duration = (performance.now() - this.adjustStartTime) / 1000;
+                if (duration > 0.5) {
+                    this.adjustSpeed *= 1.02; // 加速も緩やかに
+                    this.adjustSpeed = Math.min(this.adjustSpeed, 0.2); // 最大速度も抑えめに
+                }
+
+                let newTime = this.timeManager.getTime() + (direction * this.adjustSpeed);
+                // 範囲ループ
+                if (newTime >= 24) newTime -= 24;
+                if (newTime < 0) newTime += 24;
+
+                this.timeManager.setTime(newTime);
+                this.adjustInterval = requestAnimationFrame(loop);
+            };
+            this.adjustInterval = requestAnimationFrame(loop);
+        };
+
+        const stop = (e: Event) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (this.adjustInterval !== null) {
+                cancelAnimationFrame(this.adjustInterval);
+                this.adjustInterval = null;
+            }
+        };
+
+        btn.addEventListener('mousedown', start);
+        btn.addEventListener('touchstart', start);
+
+        btn.addEventListener('mouseup', stop);
+        btn.addEventListener('mouseleave', stop);
+        btn.addEventListener('touchend', stop);
+    }
+
     private createUI(): HTMLElement {
         const container = document.createElement('div');
         container.className = 'time-controller';
@@ -80,13 +129,31 @@ export class TimeController {
         this.timeDisplay.className = 'time-display';
         centerInfo.appendChild(this.timeDisplay);
 
+        // コントロール行（戻る - 再生 - 進む）
+        const controlsRow = document.createElement('div');
+        controlsRow.className = 'controls-row';
+
+        // 戻るボタン
+        const prevBtn = document.createElement('button');
+        prevBtn.className = 'adjust-btn reverse';
+        this.setupAdjustButton(prevBtn, -1);
+        controlsRow.appendChild(prevBtn);
+
         this.playPauseButton = document.createElement('button');
         this.playPauseButton.className = 'play-pause-btn';
         this.playPauseButton.onclick = (e) => {
             e.stopPropagation();
             this.timeManager.togglePlayPause();
         };
-        centerInfo.appendChild(this.playPauseButton);
+        controlsRow.appendChild(this.playPauseButton);
+
+        // 進むボタン
+        const nextBtn = document.createElement('button');
+        nextBtn.className = 'adjust-btn forward';
+        this.setupAdjustButton(nextBtn, 1);
+        controlsRow.appendChild(nextBtn);
+
+        centerInfo.appendChild(controlsRow);
 
         clockContainer.appendChild(centerInfo);
         panel.appendChild(clockContainer);

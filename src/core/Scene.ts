@@ -7,6 +7,10 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 // @ts-ignore
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+// @ts-ignore
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+// @ts-ignore
+import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
 
 /**
  * シーン管理クラス
@@ -18,6 +22,7 @@ export class Scene {
     public renderer: any; // THREE.WebGLRenderer
     public controls: any; // OrbitControls
     public composer: any; // EffectComposer
+    private fxaaPass: any; // ShaderPass
 
     private ambientLight!: any; // THREE.AmbientLight
     private sunLight!: any; // THREE.PointLight - 太陽の光
@@ -44,11 +49,11 @@ export class Scene {
             ambientIntensity: 0.1
         },
         dawn: {  // 夜明け 4-6時
-            sky: new THREE.Color(0xff7e6b),  // オレンジピンク
-            ground: new THREE.Color(0x3a4a5a),
-            light: new THREE.Color(0xffa07a),
-            ambient: new THREE.Color(0x5a6a7a),
-            fog: new THREE.Color(0xff9a8a),
+            sky: new THREE.Color(0xffcda2),  // 淡いピーチ色 (赤みを抑える)
+            ground: new THREE.Color(0x4a5a6a),
+            light: new THREE.Color(0xffeeb0),
+            ambient: new THREE.Color(0x7a8a9a),
+            fog: new THREE.Color(0xffcda2),
             sunIntensity: 0.3,
             ambientIntensity: 0.2
         },
@@ -123,7 +128,7 @@ export class Scene {
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
         this.controls.enableDamping = true;
         this.controls.dampingFactor = 0.05;
-        this.controls.maxPolarAngle = Math.PI / 2.2;
+        this.controls.maxPolarAngle = Math.PI / 2.05; // 地平線近くまで下げられるように（天を見上げるため）
         this.controls.minDistance = 5;
         this.controls.maxDistance = 100;
 
@@ -157,15 +162,14 @@ export class Scene {
      */
     private createGroundPlane(): void {
         const geometry = new THREE.CircleGeometry(200, 128);
-        const material = new THREE.MeshStandardMaterial({
+        // ライティングの影響を受けないMeshBasicMaterialに変更して明るさを確保
+        const material = new THREE.MeshBasicMaterial({
             color: 0x5dbcd2,  // シアン色
-            roughness: 0.9,
-            metalness: 0.1
         });
 
         this.ground = new THREE.Mesh(geometry, material);
         this.ground.rotation.x = -Math.PI / 2;
-        this.ground.position.y = 0;
+        this.ground.position.y = -0.1; // グリッド(Y=0)との干渉を防ぐため少し下げる
 
         this.scene.add(this.ground);
 
@@ -193,18 +197,84 @@ export class Scene {
     }
 
     /**
-     * 太陽を作成
+     * 太陽を作成（スタイライズド・シェーダー）
+     * ユーザー要望の「パステルグリーンのコア＋白い発光」を再現
      */
     private createSun(): void {
-        const geometry = new THREE.SphereGeometry(20, 32, 32);  // 大きめ
-        const material = new THREE.MeshStandardMaterial({
-            color: 0x8CD4CD,  // 青緑色
-            emissive: 0xffffff,  // 白い輝き
-            emissiveIntensity: 3.0  // 強く輝く
+        // ビルボード用の平面ジオメトリ
+        const geometry = new THREE.PlaneGeometry(60, 60);
+
+        const material = new THREE.ShaderMaterial({
+            uniforms: {
+                time: { value: 0.0 },
+                coreColor: { value: new THREE.Color(0xA2D9D3) }, // ミントグリーン (画像参照)
+                haloColor: { value: new THREE.Color(0xFFFFFF) }  // 純白のハロー
+            },
+            vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 coreColor;
+                uniform vec3 haloColor;
+                varying vec2 vUv;
+
+                void main() {
+                    // 中心からの距離 (0.0 - 1.0)
+                    vec2 center = vUv * 2.0 - 1.0;
+                    float dist = length(center);
+                    
+                    // コアの半径 (中心の少し小さい円)
+                    float coreRadius = 0.35;
+                    float coreEdge = 0.005; // エッジを極端に鋭くして「円盤」感を出す
+
+                    // コアのマスク (内側が1.0, エッジで0.0)
+                    float coreMask = 1.0 - smoothstep(coreRadius, coreRadius + coreEdge, dist);
+
+                    // ハロー（光輪）
+                    // コアの外側から発光
+                    float haloIntensity = smoothstep(1.0, coreRadius, dist); 
+                    haloIntensity = pow(haloIntensity, 4.0); // 減衰を強く（周囲に広がりすぎないように）
+
+                    // 【重要】合成ロジックの修正
+                    // コアがある場所は「コアの色」のみを表示（加算しない）ことで白飛びを防ぐ
+                    // コアがない場所はハローを表示
+                    
+                    vec3 finalColor = coreColor;
+                    
+                    if (dist > coreRadius) {
+                        finalColor = haloColor * haloIntensity; // 外側はハローのみ
+                    } else {
+                         // コア内部。少しだけハローを混ぜるが、ベースはCoreColor
+                         // ミントグリーンを維持するため、加算は最小限に
+                         finalColor = mix(coreColor, haloColor, 0.1); 
+                    }
+
+                    // アルファチャンネル
+                    float alpha = max(coreMask, haloIntensity);
+                    
+                    // エッジカット
+                    if (alpha < 0.01) discard;
+
+                    // ブルーム対策:
+                    // コア部分の輝度が1.0を超えないように制御（ToneMappingが効くように）
+                    gl_FragColor = vec4(finalColor, alpha);
+                }
+            `,
+            transparent: true,
+            fog: false,
+            toneMapped: false, // ToneMappingをOFFにして色を維持するが、輝度は抑える
+            depthWrite: false,
+            blending: THREE.NormalBlending // NormalBlendingでしっかりと色を塗る
         });
 
         this.sun = new THREE.Mesh(geometry, material);
-        // PointLightを弱める
+        this.sun.position.set(0, -100, -200);
+
+        // 光源
         this.sunLight = new THREE.PointLight(0xffffee, 0.3, 2000);
         this.sunLight.castShadow = true;
         this.sun.add(this.sunLight);
@@ -224,58 +294,77 @@ export class Scene {
     private createMoon(): void {
         const geometry = new THREE.SphereGeometry(18, 32, 32);
 
-        // カスタムシェーダーで月を美しく
+        // プロシージャルな月シェーダー（リアルで明るい）
         const material = new THREE.ShaderMaterial({
             uniforms: {
-                time: { value: 0.0 }
+                time: { value: 0.0 },
+                baseColor: { value: new THREE.Color(0xaaaaaa) }, // ベースをグレーに（白すぎない）
+                darkColor: { value: new THREE.Color(0x333333) }  // 暗部をしっかり暗く
             },
             vertexShader: `
+                varying vec2 vUv;
                 varying vec3 vNormal;
                 varying vec3 vPosition;
-                
                 void main() {
+                    vUv = uv;
                     vNormal = normalize(normalMatrix * normal);
                     vPosition = position;
                     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
                 }
             `,
             fragmentShader: `
+                uniform vec3 baseColor;
+                uniform vec3 darkColor;
+                varying vec2 vUv;
                 varying vec3 vNormal;
                 varying vec3 vPosition;
-                uniform float time;
-                
-                void main() {
-                    // 月の基本色（淡い青白）
-                    vec3 moonColor = vec3(0.95, 0.95, 1.0);
-                    
-                    // 光の方向（太陽からの光を想定）
-                    vec3 lightDir = normalize(vec3(1.0, 0.5, 0.0));
-                    
-                    // 拡散反射
-                    float diff = max(dot(vNormal, lightDir), 0.0);
-                    diff = pow(diff, 0.7); // ソフトな陰影
-                    
-                    // 環境光
-                    float ambient = 0.3;
-                    
-                    // 輝き
-                    float brightness = ambient + diff * 0.7;
-                    
-                    // 月のクレーター風の模様（ノイズ）
-                    float pattern = sin(vPosition.x * 10.0) * 0.5 + 0.5;
-                    pattern *= sin(vPosition.y * 8.0) * 0.5 + 0.5;
-                    pattern = pattern * 0.1 + 0.9;
-                    
-                    vec3 finalColor = moonColor * brightness * pattern;
-                    
-                    // 縁を明るく（リムライト）
-                    float rim = 1.0 - max(dot(vNormal, vec3(0.0, 0.0, 1.0)), 0.0);
-                    rim = pow(rim, 3.0) * 0.5;
-                    finalColor += vec3(rim);
-                    
-                    gl_FragColor = vec4(finalColor, 1.0);
+
+                // 簡易ノイズ関数
+                float rand(vec2 n) { 
+                    return fract(sin(dot(n, vec2(12.9898, 4.1414))) * 43758.5453);
                 }
-            `
+
+                float noise(vec2 p) {
+                    vec2 ip = floor(p);
+                    vec2 u = fract(p);
+                    u = u*u*(3.0-2.0*u);
+                    float res = mix(
+                        mix(rand(ip), rand(ip+vec2(1.0,0.0)), u.x),
+                        mix(rand(ip+vec2(0.0,1.0)), rand(ip+vec2(1.0,1.0)), u.x), u.y);
+                    return res*res;
+                }
+
+                float fbm(vec2 x) {
+                    float v = 0.0;
+                    float a = 0.5;
+                    vec2 shift = vec2(100.0);
+                    mat2 rot = mat2(cos(0.5), sin(0.5), -sin(0.5), cos(0.50));
+                    for (int i = 0; i < 5; ++i) {
+                        v += a * noise(x);
+                        x = rot * x * 2.0 + shift;
+                        a *= 0.5;
+                    }
+                    return v;
+                }
+
+                void main() {
+                    // ノイズ生成
+                    float n = fbm(vUv * 10.0 + vec2(1.0, 2.0)); 
+                    
+                    vec3 col = mix(baseColor, darkColor, n * 0.7); // コントラストを上げる
+                    
+                    // 輝度を大幅に下げる（反射光としての月）
+                    col *= 0.6; 
+
+                    // リムライト（控えめに）
+                    float rim = 1.0 - max(dot(vNormal, vec3(0.0, 0.0, 1.0)), 0.0);
+                    col += vec3(0.2) * pow(rim, 3.0);
+
+                    gl_FragColor = vec4(col, 1.0);
+                }
+            `,
+            fog: false,  // 霧の影響は受けない（クリアに見せる）
+            toneMapped: true // トーンマッピング有効化（白飛び防止）
         });
 
         this.moon = new THREE.Mesh(geometry, material);
@@ -509,7 +598,20 @@ export class Scene {
      * ポストプロセッシングのセットアップ
      */
     private setupPostProcessing(): any {
-        const composer = new EffectComposer(this.renderer);
+        // MSAA (Multisample Anti-Aliasing) を有効化するためのレンダーターゲット
+        const renderTarget = new THREE.WebGLRenderTarget(
+            window.innerWidth,
+            window.innerHeight,
+            {
+                minFilter: THREE.LinearFilter,
+                magFilter: THREE.LinearFilter,
+                format: THREE.RGBAFormat,
+                type: THREE.HalfFloatType, // 高品質なカラー
+                samples: 4 // MSAA 4x (干渉縞・ノイズ対策)
+            }
+        );
+
+        const composer = new EffectComposer(this.renderer, renderTarget);
 
         const renderPass = new RenderPass(this.scene, this.camera);
         composer.addPass(renderPass);
@@ -523,6 +625,15 @@ export class Scene {
         );
         composer.addPass(bloomPass);
 
+        // FXAA (Fast Approximate Anti-Aliasing) - ジャギー・モアレ低減の決定版
+        const effectFXAA = new ShaderPass(FXAAShader);
+        const pixelRatio = this.renderer.getPixelRatio();
+        if (effectFXAA.uniforms['resolution']) {
+            effectFXAA.uniforms['resolution'].value.set(1 / (window.innerWidth * pixelRatio), 1 / (window.innerHeight * pixelRatio));
+        }
+        composer.addPass(effectFXAA);
+        this.fxaaPass = effectFXAA; // リサイズ用に保持
+
         return composer;
     }
 
@@ -534,6 +645,11 @@ export class Scene {
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.composer.setSize(window.innerWidth, window.innerHeight);
+
+        if (this.fxaaPass) {
+            const pixelRatio = this.renderer.getPixelRatio();
+            this.fxaaPass.uniforms['resolution'].value.set(1 / (window.innerWidth * pixelRatio), 1 / (window.innerHeight * pixelRatio));
+        }
     }
 
     private lastTime = performance.now();
@@ -548,6 +664,19 @@ export class Scene {
         const currentTime = performance.now();
         const deltaTime = (currentTime - this.lastTime) / 1000;
         this.lastTime = currentTime;
+
+        // 太陽のビルボード処理（常にカメラを向く）
+        if (this.sun && this.camera) {
+            this.sun.quaternion.copy(this.camera.quaternion);
+        }
+
+        // シェーダーの時間更新
+        if (this.moon && this.moon.material.uniforms) {
+            this.moon.material.uniforms.time.value += deltaTime;
+        }
+        if (this.sun && this.sun.material.uniforms) {
+            this.sun.material.uniforms.time.value += deltaTime;
+        }
 
         // コールバック実行
         if (this.animationCallback) {

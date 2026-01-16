@@ -41,33 +41,115 @@ export class HexUtils {
     static axialDistance(q1: number, r1: number, q2: number, r2: number): number {
         return (Math.abs(q1 - q2) + Math.abs(r1 - r2) + Math.abs(q1 + r1 - q2 - r2)) / 2;
     }
+
+    /**
+     * World座標からAxial座標への変換（フラットトップ）
+     */
+    static worldToAxial(x: number, z: number): { q: number; r: number } {
+        const q = (x * Math.sqrt(3) / 3 - z / 3) / this.HEX_SIZE;
+        const r = (z * 2 / 3) / this.HEX_SIZE;
+        return this.axialRound(q, r);
+    }
+
+    /**
+     * Axial座標の丸め処理
+     */
+    static axialRound(q: number, r: number): { q: number; r: number } {
+        let x = q;
+        let z = r;
+        let y = -x - z;
+
+        let rx = Math.round(x);
+        let rz = Math.round(z);
+        let ry = Math.round(y);
+
+        const xDiff = Math.abs(rx - x);
+        const yDiff = Math.abs(ry - y);
+        const zDiff = Math.abs(rz - z);
+
+        if (xDiff > yDiff && xDiff > zDiff) {
+            rx = -ry - rz;
+        } else if (yDiff > zDiff) {
+            ry = -rx - rz;
+        } else {
+            rz = -rx - ry;
+        }
+
+        return { q: rx, r: rz };
+    }
 }
 
 /**
  * 六角形の状態を表すインターフェース
  */
 interface HexState {
+    /** Axial座標系のq座標 */
     q: number;
+    /** Axial座標系のr座標 */
     r: number;
-    mesh: THREE.Group;        // グループに変更（外側と内側の線）
-    material: THREE.LineBasicMaterial;
-    intensity: number;        // 現在の明るさ (0-1)
-    targetIntensity: number;  // 目標明るさ (0-1)
+    /** 現在の明るさ (0.0 = ベース色, 1.0+ = 発光オーバードライブ) */
+    intensity: number;
+    /** 目標明るさ（補間ターゲット値） */
+    targetIntensity: number;
+    /** 頂点カラーバッファ内の開始頂点インデックス（12頂点/hex） */
+    colorIndex: number;
+}
+
+/**
+ * 波動情報の管理
+ */
+interface Wave {
+    /** 波の発生源のq座標 */
+    q: number;
+    /** 波の発生源のr座標 */
+    r: number;
+    /** 波の発生時刻（秒単位） */
+    startTime: number;
+    /** 波の伝播速度（ヘックス/秒） */
+    speed: number;
+    /** 波の幅（ヘックス数単位、この範囲内で発光） */
+    width: number;
+    /** 減衰率（未使用、将来の拡張用） */
+    decay: number;
 }
 
 /**
  * ヘキサゴングリッド管理クラス
+ * 
+ * パフォーマンス最適化:
+ * - Single BufferGeometry: 全ヘックスを1つのジオメトリに統合
+ * - Vertex Colors: シェーダー不要で色変更可能
+ * - Active Tracking: 変更が必要なヘックスのみ更新
  */
 export class HexGrid {
     private group: THREE.Group;
+
+    /** 全ヘックスの状態管理（キー: "q,r"） */
     private hexes: Map<string, HexState> = new Map();
-    private baseColor = new THREE.Color(0x00ffff);
-    private dimmedColor = new THREE.Color(0x008888);
+
+    /** 更新が必要なヘックスのキーを追跡（パフォーマンス最適化） */
+    private activeHexes: Set<string> = new Set();
+
+    // 単一のメッシュとジオメトリ（最適化）
+    private mesh: THREE.LineSegments | null = null;
+    private geometry: THREE.BufferGeometry | null = null;
+
+    /** ベース状態のヘックス色（暗めのCyan） */
+    private baseHexColor = new THREE.Color(0x22aadd);
+    /** アクティブ状態のヘックス色（明るいCyan、発光用） */
+    private activeHexColor = new THREE.Color(0x00ffff);
+
+    /** 伝播中の波のリスト */
+    private waves: Wave[] = [];
+    /** 現在ホバー中のヘックス座標 */
+    private hoveredHex: { q: number, r: number } | null = null;
 
     constructor(radius: number = 30) {
         this.group = new THREE.Group();
         this.generateGrid(radius);
     }
+
+
 
     /**
      * 座標をキーに変換
@@ -77,64 +159,80 @@ export class HexGrid {
     }
 
     /**
-     * グリッド全体を個別LineLoopで生成
+     * グリッド全体を生成 (最適化: バッチ描画)
      */
     private generateGrid(radius: number): void {
+        const positions: number[] = [];
+        const colors: number[] = [];
+        let index = 0;
+
+        // グリッドを走査
         for (let q = -radius; q <= radius; q++) {
             const r1 = Math.max(-radius, -q - radius);
             const r2 = Math.min(radius, -q + radius);
 
             for (let r = r1; r <= r2; r++) {
-                this.createHex(q, r);
+                const { x, z } = HexUtils.axialToWorld(q, r);
+
+                // 頂点の取得 (Scale 0.95)
+                const vertices = HexUtils.getHexVertices(x, z, 0.95);
+
+                // LineSegments用に頂点ペアを作成 (0-1, 1-2, ..., 5-0)
+                for (let i = 0; i < 6; i++) {
+                    const v1 = vertices[i];
+                    const v2 = vertices[(i + 1) % 6];
+
+                    if (v1 && v2) {
+                        positions.push(v1.x, 0, v1.z);
+                        positions.push(v2.x, 0, v2.z);
+
+                        // 初期色 (Base Color)
+                        colors.push(this.baseHexColor.r, this.baseHexColor.g, this.baseHexColor.b);
+                        colors.push(this.baseHexColor.r, this.baseHexColor.g, this.baseHexColor.b);
+                    }
+                }
+
+                // 状態を保存
+                const key = this.coordToKey(q, r);
+                this.hexes.set(key, {
+                    q,
+                    r,
+                    intensity: 0,
+                    targetIntensity: 0,
+                    colorIndex: index
+                });
+
+                // 次のヘックスのインデックス (1ヘックスあたり12頂点 * 3要素)
+                // colorIndexは「頂点数」単位で管理すると更新が楽 (12頂点)
+                index += 12;
             }
         }
 
-        console.log(`Generated ${this.hexes.size} hexagons`);
-    }
+        // ジオメトリの作成
+        this.geometry = new THREE.BufferGeometry();
+        this.geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        this.geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
 
-    /**
-     * 個別の六角形を生成
-     */
-    /**
-     * 個別の六角形を生成
-     */
-    private createHex(q: number, r: number): void {
-        const { x, z } = HexUtils.axialToWorld(q, r);
-
-        // 個別のマテリアル（共有）
+        // マテリアルの作成 (Vertex Colorsを使用)
         const material = new THREE.LineBasicMaterial({
-            color: this.dimmedColor.clone(),
+            vertexColors: true,
             linewidth: 1,
+            transparent: false, // 透明化無効（パフォーマンス向上）
+            blending: THREE.NormalBlending // 通常合成
         });
 
-        // グループ作成
-        const group = new THREE.Group();
-        group.userData = { q, r };
+        this.mesh = new THREE.LineSegments(this.geometry, material);
+        this.group.add(this.mesh);
 
-        // 1. 六角形 (Scale 0.95) - 少し隙間を作る
-        const outerVertices = HexUtils.getHexVertices(x, z, 0.95);
-        const outerGeometry = new THREE.BufferGeometry().setFromPoints(outerVertices);
-        const outerMesh = new THREE.LineLoop(outerGeometry, material);
-        group.add(outerMesh);
-
-        // 内側の六角形は不要のため削除
-
-        // 状態を保存
-        const key = this.coordToKey(q, r);
-        this.hexes.set(key, {
-            q,
-            r,
-            mesh: group,
-            material,
-            intensity: 0,
-            targetIntensity: 0,
-        });
-
-        this.group.add(group);
+        console.log(`Generated optimized grid with ${this.hexes.size} hexagons`);
     }
 
     /**
      * 六角形の明るさを更新
+     * 
+     * @param q - Axial座標のq
+     * @param r - Axial座標のr
+     * @param intensity - 目標明るさ（0.0～1.0、ただしクランプされる）
      */
     public updateHexIntensity(q: number, r: number, intensity: number): void {
         const key = this.coordToKey(q, r);
@@ -142,32 +240,186 @@ export class HexGrid {
         if (!hex) return;
 
         hex.targetIntensity = Math.max(0, Math.min(1, intensity));
+
+        // アクティブリストに追加（更新対象として追跡）
+        this.activeHexes.add(key);
     }
 
     /**
-     * フレームごとの更新処理（スムーズな遷移）
+     * ホバー状態を設定
+     */
+    public setHover(q: number, r: number): void {
+        // 同じヘックスなら何もしない
+        if (this.hoveredHex && this.hoveredHex.q === q && this.hoveredHex.r === r) return;
+
+        // 前のホバーを解除
+        if (this.hoveredHex) {
+            this.updateHexIntensity(this.hoveredHex.q, this.hoveredHex.r, 0);
+        }
+
+        // 新しいホバーを設定
+        const key = this.coordToKey(q, r);
+        if (this.hexes.has(key)) {
+            this.hoveredHex = { q, r };
+            this.updateHexIntensity(q, r, 1.0); // Cyanにする
+        } else {
+            this.hoveredHex = null; // グリッド外
+        }
+    }
+
+    /**
+     * 波及エフェクトをトリガー
+     * 
+     * 指定座標から同心円状に広がる波を発生させる。
+     * 波は一定速度で伝播し、範囲内のヘックスを発光させる。
+     * 
+     * @param q - 波の発生源のq座標
+     * @param r - 波の発生源のr座標
+     */
+    public triggerWave(q: number, r: number): void {
+        this.waves.push({
+            q,
+            r,
+            startTime: performance.now() / 1000,
+            speed: 25.0,  // 伝播速度（ヘックス/秒）
+            width: 1.5,   // 波の幅（ヘックス数）
+            decay: 0.9    // 減衰率（未使用）
+        });
+
+        // 古い波を削除（上限管理: 最大5波まで同時表示）
+        if (this.waves.length > 5) {
+            this.waves.shift();
+        }
+    }
+
+    /**
+     * フレームごとの更新処理
+     * 
+     * パフォーマンス最適化:
+     * - アクティブなヘックスのみ更新（全体走査を回避）
+     * - 波の影響範囲を事前計算
+     * - 不要になったヘックスをアクティブリストから削除
+     * 
+     * @param deltaTime - 前フレームからの経過時間（秒）
      */
     public update(deltaTime: number): void {
-        const lerpSpeed = 10.0; // 遷移速度
+        if (!this.geometry || !this.mesh) return;
 
-        this.hexes.forEach((hex) => {
-            // 強度が実質0の場合はスキップ（パフォーマンス最適化）
-            if (hex.intensity < 0.001 && hex.targetIntensity < 0.001) {
-                hex.material.color.copy(this.dimmedColor);
-                return;
+        const currentTime = performance.now() / 1000;
+        const lerpSpeed = 5.0;
+
+        // カラー属性へのアクセス
+        // @ts-ignore
+        const colorAttribute = this.geometry.attributes.color as THREE.BufferAttribute;
+        let needsUpdate = false;
+
+        // 波の更新とクリーンアップ（GC発生を抑えるため filter ではなく逆順ループで処理）
+        for (let i = this.waves.length - 1; i >= 0; i--) {
+            const wave = this.waves[i];
+            if (!wave) continue;
+
+            const age = currentTime - wave.startTime;
+            const distance = age * wave.speed;
+
+            // 波の最大到達距離（6ヘックス）を超えたら削除
+            if (distance >= 6) {
+                this.waves.splice(i, 1);
+            }
+        }
+
+        // 波の影響を受けるヘックスをアクティブリストに追加
+        for (const wave of this.waves) {
+            const age = currentTime - wave.startTime;
+            const waveDist = age * wave.speed;
+
+            // 波の中心から影響範囲内のヘックスを計算
+            // 最大6ヘックス + 波の幅を考慮
+            const maxRadius = Math.ceil(waveDist + wave.width);
+
+            // 波の近傍のヘックスのみをアクティブ化
+            for (const [key, hex] of this.hexes) {
+                const dist = HexUtils.axialDistance(hex.q, hex.r, wave.q, wave.r);
+                if (dist <= maxRadius && dist >= waveDist - wave.width) {
+                    this.activeHexes.add(key);
+                }
+            }
+        }
+
+        // アクティブなヘックスのみ更新（パフォーマンス最適化）
+        for (const key of this.activeHexes) {
+            const hex = this.hexes.get(key);
+            if (!hex) {
+                // 存在しないキーは削除
+                this.activeHexes.delete(key);
+                continue;
             }
 
-            // 現在の明るさを目標に近づける
-            hex.intensity += (hex.targetIntensity - hex.intensity) * lerpSpeed * deltaTime;
+            let waveIntensity = 0;
 
-            // 色を更新（強度を1.5倍に調整）
-            const boostedIntensity = Math.min(1.0, hex.intensity * 1.5);
-            hex.material.color.lerpColors(
-                this.dimmedColor,
-                this.baseColor,
-                boostedIntensity
-            );
-        });
+            // 各波からの影響を計算
+            for (const wave of this.waves) {
+                const dist = HexUtils.axialDistance(hex.q, hex.r, wave.q, wave.r);
+
+                // 波の範囲外（6HEX以上）なら計算しない
+                if (dist > 6) continue;
+
+                const age = currentTime - wave.startTime;
+                const waveDist = age * wave.speed;
+
+                // 波のピークとの距離
+                const diff = Math.abs(dist - waveDist);
+
+                if (diff < wave.width) {
+                    // ガウス関数的な減衰
+                    const v = 1.0 - (diff / wave.width);
+                    waveIntensity += Math.pow(v, 3) * 2.0; // 控えめに発光（ドラッグ時も考慮）
+                }
+            }
+
+            // 波の累積強度を制限（ドラッグ時に複数波が重なっても一定の明るさを保つ）
+            waveIntensity = Math.min(waveIntensity, 1.0);
+
+            // ベースのターゲット強度（上限撤廃してBloomさせる）
+            const target = hex.targetIntensity + waveIntensity;
+
+            // 現在の明るさを目標に近づける (変化があれば更新)
+            if (Math.abs(hex.intensity - target) > 0.001 || hex.intensity > 0.001) {
+                hex.intensity += (target - hex.intensity) * lerpSpeed * deltaTime;
+
+                // 色を計算
+                let r, g, b;
+
+                // 強度が1.0を超える場合は「オーバードライブ」として発光強度をブースト
+                // これにより、Bloomフィルターが反応して強く光る
+                if (hex.intensity > 1.0) {
+                    const boost = hex.intensity; // そのまま倍率に
+                    r = this.activeHexColor.r * boost;
+                    g = this.activeHexColor.g * boost;
+                    b = this.activeHexColor.b * boost;
+                } else {
+                    // 通常の補間
+                    r = THREE.MathUtils.lerp(this.baseHexColor.r, this.activeHexColor.r, hex.intensity);
+                    g = THREE.MathUtils.lerp(this.baseHexColor.g, this.activeHexColor.g, hex.intensity);
+                    b = THREE.MathUtils.lerp(this.baseHexColor.b, this.activeHexColor.b, hex.intensity);
+                }
+
+                // 頂点カラーを一括更新 (12頂点分)
+                for (let i = 0; i < 12; i++) {
+                    colorAttribute.setXYZ(hex.colorIndex + i, r, g, b);
+                }
+
+                needsUpdate = true;
+            } else {
+                // 変化がなく、十分に暗い場合はアクティブリストから削除
+                if (Math.abs(hex.intensity) < 0.001 && Math.abs(hex.targetIntensity) < 0.001) {
+                    this.activeHexes.delete(key);
+                }
+            }
+        }
+
+        if (needsUpdate) {
+            colorAttribute.needsUpdate = true;
+        }
     }
 
     /**
@@ -179,7 +431,7 @@ export class HexGrid {
     }
 
     /**
-     * グリッドのグループを取得
+     * グループを取得（Sceneに追加用）
      */
     public getGroup(): THREE.Group {
         return this.group;
@@ -189,7 +441,9 @@ export class HexGrid {
      * すべての六角形を取得
      */
     public getAllHexes(): THREE.Object3D[] {
-        return Array.from(this.hexes.values()).map(hex => hex.mesh);
+        // 最適化後はMeshが1つだけなので、Raycasterでの個別判定は不可。
+        // InteractionはPlane計算方式に移行したため、これは使用されないはず。
+        return this.mesh ? [this.mesh] : [];
     }
 
     /**
