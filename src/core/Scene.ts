@@ -152,8 +152,9 @@ export class Scene {
      * ライトのセットアップ
      */
     private setupLights(): void {
-        // 環境光のみ（太陽は別途作成）
-        this.ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+        // 環境光を強化（PBRマテリアル用）
+        // タイルが太陽光と環境光で適切に照らされるように強度を上げる
+        this.ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
         this.scene.add(this.ambientLight);
     }
 
@@ -274,8 +275,9 @@ export class Scene {
         this.sun = new THREE.Mesh(geometry, material);
         this.sun.position.set(0, -100, -200);
 
-        // 光源
-        this.sunLight = new THREE.PointLight(0xffffee, 0.3, 2000);
+
+        // 光源を強化（タイルのPBRマテリアルがしっかり照らされるように）
+        this.sunLight = new THREE.PointLight(0xffffee, 2.0, 2000);
         this.sunLight.castShadow = true;
         this.sun.add(this.sunLight);
 

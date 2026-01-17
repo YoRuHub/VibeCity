@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { TileType } from './TileTypes';
+import { TileRenderer } from './TileRenderer';
 
 /**
  * ヘキサゴン（六角形）の座標計算ユーティリティ
@@ -93,6 +95,12 @@ interface HexState {
     targetIntensity: number;
     /** 頂点カラーバッファ内の開始頂点インデックス（12頂点/hex） */
     colorIndex: number;
+
+    // === タイル配置システム ===
+    /** 配置されているタイルの種類 */
+    tileType: TileType;
+    /** タイル用の3Dメッシュ（null = 空タイル） */
+    tileMesh: THREE.Mesh | null;
 }
 
 /**
@@ -144,8 +152,12 @@ export class HexGrid {
     /** 現在ホバー中のヘックス座標 */
     private hoveredHex: { q: number, r: number } | null = null;
 
+    /** タイルメッシュレンダラー */
+    private tileRenderer: TileRenderer;
+
     constructor(radius: number = 30) {
         this.group = new THREE.Group();
+        this.tileRenderer = new TileRenderer();
         this.generateGrid(radius);
     }
 
@@ -199,7 +211,9 @@ export class HexGrid {
                     r,
                     intensity: 0,
                     targetIntensity: 0,
-                    colorIndex: index
+                    colorIndex: index,
+                    tileType: TileType.Empty,  // 初期状態は空タイル
+                    tileMesh: null
                 });
 
                 // 次のヘックスのインデックス (1ヘックスあたり12頂点 * 3要素)
@@ -420,6 +434,37 @@ export class HexGrid {
         if (needsUpdate) {
             colorAttribute.needsUpdate = true;
         }
+    }
+
+    /**
+     * 指定座標にタイルを配置
+     * 
+     * 既存のタイルメッシュを削除し、新しいタイプのタイルを生成して配置する。
+     * TileType.Emptyを指定した場合はタイルを削除（空に戻す）。
+     * 
+     * @param q - Axial座標系のq座標
+     * @param r - Axial座標系のr座標
+     * @param type - 配置するタイルの種類
+     */
+    public placeTile(q: number, r: number, type: TileType): void {
+        const key = this.coordToKey(q, r);
+        const hex = this.hexes.get(key);
+        if (!hex) return;
+
+        // 既存タイルを削除
+        if (hex.tileMesh) {
+            this.group.remove(hex.tileMesh);
+            this.tileRenderer.disposeMesh(hex.tileMesh);
+            hex.tileMesh = null;
+        }
+
+        // 新しいタイルを生成（Emptyでない場合のみ）
+        if (type !== TileType.Empty) {
+            hex.tileMesh = this.tileRenderer.createTileMesh(q, r, type);
+            this.group.add(hex.tileMesh);
+        }
+
+        hex.tileType = type;
     }
 
     /**
